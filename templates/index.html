@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>有道智云API漫画翻译</title>
+<style>
+body { font-family: Arial; margin: 0; padding: 0; background: #f0f0f0; }
+#controls { padding:10px; background:#fff; position:sticky; top:0; text-align:center; }
+button { padding:8px 16px; background:#0078d7; color:#fff; border:none; border-radius:4px; cursor:pointer; margin:0 5px; }
+button:hover { background:#005fa3; }
+#file-input { display:none; }
+#image-strip { display:flex; flex-direction:column; align-items:center; padding:20px; gap:10px; }
+.webp-image { max-width:100%; height:auto; box-shadow:0 2px 5px rgba(0,0,0,0.1); cursor:pointer; }
+.file-name { text-align:center; font-size:12px; color:#666; margin-top:5px; }
+</style>
+</head>
+<body>
+<div id="controls">
+    <button id="open-folder">选择文件夹</button>
+    <button id="translate-btn">逐张翻译</button>
+    <button id="download-all-btn">另存为</button>
+    <input type="file" id="file-input" webkitdirectory directory multiple />
+</div>
+<div id="image-strip"></div>
+
+<script>
+const fileInput = document.getElementById('file-input');
+const openFolderBtn = document.getElementById('open-folder');
+const translateBtn = document.getElementById('translate-btn');
+const downloadAllBtn = document.getElementById('download-all-btn');
+const imageStrip = document.getElementById('image-strip');
+
+let uploadedFiles = [];
+let imgElements = [];
+
+openFolderBtn.addEventListener('click', () => fileInput.click());
+
+fileInput.addEventListener('change', async (event) => {
+    const files = Array.from(event.target.files);
+
+    // 过滤并排序 WebP 图片
+    const imageFiles = files
+        .filter(file => file.name.toLowerCase().endsWith('.webp'))
+        .sort((a, b) => {
+            const numsA = a.name.match(/\d+/g)?.map(n => parseInt(n)) || [0];
+            const numsB = b.name.match(/\d+/g)?.map(n => parseInt(n)) || [0];
+            for (let i = 0; i < Math.max(numsA.length, numsB.length); i++) {
+                const na = numsA[i] ?? 0;
+                const nb = numsB[i] ?? 0;
+                if (na !== nb) return na - nb;
+            }
+            return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: 'base' });
+        });
+
+    if (imageFiles.length === 0) {
+        alert('未找到 WebP 图片！');
+        return;
+    }
+
+    uploadedFiles = imageFiles;
+    imageStrip.innerHTML = '';
+    imgElements = [];
+
+    for (const file of imageFiles) {
+        await loadAndAppendImage(file);
+    }
+});
+
+function loadAndAppendImage(file) {
+    return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (e) => {
+            const imgContainer = document.createElement('div');
+            const img = document.createElement('img');
+            img.src = e.target.result;
+            img.classList.add('webp-image');
+
+            const fileName = document.createElement('div');
+            fileName.textContent = file.name;
+            fileName.classList.add('file-name');
+
+            imgContainer.appendChild(img);
+            imgContainer.appendChild(fileName);
+            imageStrip.appendChild(imgContainer);
+
+            imgElements.push(img);
+
+            // 双击单张翻译
+            img.addEventListener('dblclick', async () => {
+                const formData = new FormData();
+                formData.append('file', file);
+                try {
+                    const res = await fetch('/upload', { method: 'POST', body: formData });
+                    if(!res.ok) throw new Error('服务器错误');
+                    const data = await res.json();
+                    img.src = "data:image/png;base64," + data.translated_image;
+                } catch(e) {
+                    console.error(`单张翻译 ${file.name} 出错:`, e);
+                    alert(`单张翻译 ${file.name} 出错`);
+                }
+            });
+
+            resolve();
+        };
+        reader.readAsDataURL(file);
+    });
+}
+
+// 逐张翻译
+translateBtn.addEventListener('click', async () => {
+    if(uploadedFiles.length === 0){ alert('请先选择图片'); return; }
+
+    for(let i=0; i<uploadedFiles.length; i++){
+        const file = uploadedFiles[i];
+        const img = imgElements[i];
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch('/upload', { method:'POST', body: formData });
+            if(!res.ok) throw new Error('服务器错误');
+            const data = await res.json();
+            img.src = "data:image/png;base64," + data.translated_image;
+        } catch(e) {
+            console.error(`翻译 ${file.name} 出错:`, e);
+        }
+    }
+
+    alert('全部图片翻译完成');
+});
+
+downloadAllBtn.addEventListener('click', async () => {
+    if(imgElements.length === 0){
+        alert('没有图片可保存');
+        return;
+    }
+
+    try {
+        // 打开文件夹选择器
+        const dirHandle = await window.showDirectoryPicker();
+
+        for(let i = 0; i < imgElements.length; i++){
+            const img = imgElements[i];
+            const file = uploadedFiles[i];
+
+            // 使用 canvas 转 WebP
+            const canvas = document.createElement('canvas');
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+            const ctx = canvas.getContext('2d');
+            ctx.drawImage(img, 0, 0);
+
+            const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/webp'));
+            const nameWithoutExt = file.name.replace(/\.[^/.]+$/, "") + ".webp";
+
+            // 创建文件并写入
+            const fileHandle = await dirHandle.getFileHandle(nameWithoutExt, { create: true });
+            const writable = await fileHandle.createWritable();
+            await writable.write(blob);
+            await writable.close();
+        }
+
+        alert('全部图片已保存到选定文件夹');
+    } catch (err) {
+        console.error(err);
+        alert('保存失败或用户取消');
+    }
+});
+</script>
+</body>
+</html>
